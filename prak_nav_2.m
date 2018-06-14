@@ -1,354 +1,365 @@
-clc; clear all;
-global omega0 e a  u; 
-%omega0 =  1.2383e-3; 
-%omega0 = omega0^2; % 
-e = 6.69437999013e-3; % ??????????????
-a = 6378137; % ??????? ??????? ??????? (?????) 
-u = 7292115.8553e-11; % ??????? ???????? ????? 
-R = 6370000;
-% ????????? ??????
-data = load('start.dat'); % ??????????
-phi = data(1)/180*pi; 
-lambda = data(2)/180*pi; 
-phi0 = phi; 
-lambda0 = lambda; 
-h0 = data(3);
-course = data(4);
+clc; 
+global e a u R startIndex estimationInterval motionStartIndex includeRealConfiguration; 
 
-Nvi = 1;   % ??Ÿ??? ????????
-Nvo = 12000;  % ????? ????????
-Ni = 12000;   % ??Ÿ??? ????????
+e = 6.69437999013e-3; % squared eccentricity
+a = 6378137; % big axle 
+u = 7292115.8553e-11; % angular velocity
+R = 6370000; % earth radius
+startIndex = 1;   % initial index 
+estimationInterval = 15270;  % interval average
+motionStartIndex = estimationInterval + 1;   % first index pf data, when motion starts
+includeRealConfiguration = true; % include optional plots and calculations
 
+% deserialize input data (local measures) in start position t = 0
+data = load('start.dat'); % initial conditions
 
-data = load('imu.dat');% ?????? ?? imu.dat
-    t = data(:,1);
-    omega1=deg2rad(data(:,2));  % ?????????? ??????? ????????  
-    omega2=deg2rad(data(:,3));  
-    omega3=deg2rad(data(:,4));  
-    z1 = data(:,5); % ???????? ????????? ?? ??? z1 .. z2
-    z2 = data(:,6);
-    z3 = data(:,7);
-    fz = mean(data(1:Nvo,5:7)) %??Ÿ?????? ????????
-    uz = mean(data(1:Nvo,2:4))
-    ux = [0,u*cos(phi),u*sin(phi)];  
+phi = rad2deg(data(1)); % latitude
+lambda = rad2deg(data(2)); % longtitude
+
+h0 = data(3); % initial height
+course = data(4); % course angle
+
+% deserialize input data (accelerometers and angular velocity measures)
+data = load('imu.dat'); 
+t = data(:, 1);
+
+omega1 = deg2rad(data(:, 2));  
+omega2 = deg2rad(data(:, 3));  
+omega3 = deg2rad(data(:, 4));  
     
-data = load('trj.dat');% ?????? ?? traj.dat
-t2 = data(:,1); % ?????
-% ????????Ÿ????? ??????????
-lat = deg2rad(data(:,2));  % ??????
-long = deg2rad(data(:,3)); % ???????
-h = data(:,4); % ??????
-Ve = data(:,5); % ????????  Ve - v1, Vn - v2
-Vn = data(:,6);
-Vh = data(:,7);
-% ???? ??????? ??? ????????
-head=deg2rad(data(:,8));  % ???????? (???????? ????)
-pitch=deg2rad(data(:,9));    % ??????
-roll=deg2rad(data(:,10)); % ????
+z1 = data(:, 5); 
+z2 = data(:, 6);
+z3 = data(:, 7);
 
-% ?????????? ??Ÿ??? ????????
-phi0=lat(Nvi); 
-ld0=long(Nvi);
-Ve0=Ve(Nvi); 
-Vn0=Vn(Nvi);
-Vh0=Vh(Nvi);
+% get mean on estimation interval
+fz = mean(data(1 : estimationInterval, 5 : 7));
+disp(fz);
+uz = mean(data(1 : estimationInterval, 2 : 4));  
+disp(uz);
 
+% deserialize correct values of coordinates and velocities
+data = load('trj.dat');
+t2 = data(:,1); % time
 
-% ??????? ???????? ?????????
-% 2*omega0*h0 - [omega, v]
-% https://ru.wikipedia.org/wiki/%D0%A3%D1%81%D0%BA%D0%BE%D1%80%D0%B5%D0%BD%D0%B8%D0%B5_%D1%81%D0%B2%D0%BE%D0%B1%D0%BE%D0%B4%D0%BD%D0%BE%D0%B3%D0%BE_%D0%BF%D0%B0%D0%B4%D0%B5%D0%BD%D0%B8%D1%8F
- g = 9.78030*(1+0.0053020*(sin(phi0))^2-0.0000070*(sin(2*phi0))^2) - 0.00014 - 0.000003086*h0 
-% g = 9.8155;
- %g = 9.78030*(1 - 2*h0/a + (3/4)*e*(sin(phi0))^2);
+lat = deg2rad(data(:,2));  
+long = deg2rad(data(:,3)); 
+h = data(:,4); 
+
+Ve = data(:,5); % velocity to East
+Vn = data(:,6); % velocity to Nord
+Vh = data(:,7); % velocity with respect to surface normal
+
+% Krylov's angles
+head = deg2rad(data(:,8));  
+pitch = deg2rad(data(:,9));   
+roll = deg2rad(data(:,10)); 
+
+% Init values of velocities and coordinates
+phi0 = lat(startIndex); 
+lambda0 = long(startIndex);
+Ve0 = Ve(startIndex); 
+Vn0 = Vn(startIndex);
+Vh0 = Vh(startIndex);
+
+% calculating real free fall acceleration
+g = 9.78030*(1 + 0.0053020*(sin(phi0))^2 - 0.0000070*(sin(2*phi0))^2) - 0.00014 - 0.000003086*h0;
  
-% ??????? ??????????
-% L=zeros(3,3);
-% L(:,3)=fz/g;
-% L(:,2)=[(uz(1)-L(1,3)*norm(uz)*sin(phi0))/(cos(phi0)*norm(uz));(uz(2)-L(2,3)*norm(uz)*sin(phi0))/(cos(phi0)*norm(uz));(uz(3)-L(3,3)*norm(uz)*sin(phi0))/(cos(phi0)*norm(uz))];
-% L(:,1)=cross(L(:,2),L(:,3)); 
-
-L = zeros(3,3);
-L(:,3) = fz / g;
-% L(:,3) = [0; 0; 1];
-sinTeta = L(2,3);
-teta1 = asin(sinTeta)
-cosGamma = L(3,3) / cos(teta1);
-gamma1 = -abs(acos(cosGamma))
-L( :,3) = [-cos(teta1) * sin(gamma1); sinTeta; cos(teta1)*cosGamma];
-
-L(:,2) = [(uz(1)-L(1,3)*norm(uz)*sin(phi0))/(cos(phi0)*norm(uz));(uz(2)-L(2,3)*norm(uz)*sin(phi0))/(cos(phi0)*norm(uz));(uz(3)-L(3,3)*norm(uz)*sin(phi0))/(cos(phi0)*norm(uz))];
-cosPsi = L(2,2) / cos(teta1);
-psi1 = -acos(cosPsi)
-
-L(:, 2) = [sin(psi1)*cosGamma + cosPsi*sinTeta*sin(gamma1); cosPsi*cos(teta1); sin(psi1)*sin(gamma1) - cosPsi*sinTeta*cosGamma];
-L(:, 1) = [cosPsi*cosGamma - sin(psi1)*sinTeta*sin(gamma1); -sin(psi1)*cos(teta1); cosPsi*sin(gamma1) + sin(psi1)*sinTeta*cosGamma]; 
-
-
-% ????? ?????? ?????? ? ?????? ?????? ? ???????
- 
-% ?????????????? ???? ?????Ÿ??? ?????????
-
-Az=L; % ??Ÿ. ??????? Az(0) = L(0), Ax(0) = E
- 
-Ax=eye(3);
-
- % ????????? ??Ÿ?????? ??????? (? ??Ÿ?????? ?????? ??????? ????? ?? ?????)
-for i = 1:Ni
-   lambda(i) = ld0;
-   phi(i) = phi0;
-   hs(i) = h0;
-   Ves(i) = Ve0;
-   Vns(i) = Vn0;
-   Vhs(i) = Vh0;
-   psi(i) = psi1;
-   gam(i) = gamma1;
-   tet(i) = teta1;
-end
-
-
-for k = Ni:(size(t)-1)
-    
-%1  ???
-delta = t(k+1) - t(k);
-
-%2
-% ????? ?????
-omega = sqrt(omega1(k)^2 + omega2(k)^2 + omega3(k)^2);
-% ???????????? ??????? (3.12)
-c1 = sin(omega*delta)/omega;
-c2 = (1-cos(omega*delta))/(omega^2) ;
-
-
-Omega = [0 , omega3(k), - omega2(k);...  % ??????? (3.4) ??? Az
-     -omega3(k),  0 , omega1(k);...
-     omega2(k), - omega1(k) , 0];
- 
-Az = (eye(3) + c1*Omega+ c2* Omega^2)*Az; % A_i+1  ???????????? ??????? (3.12)
-
-%3
-
-Re= a/sqrt(1-e*(sin(phi(k)))^2);% + hs(k);  (3.7)
-Rn= a*(1-e)/(1-e*(sin(phi(k)))^2)^(3/2);% + hs(k); (3.7)
-
-%  g= 9.78030*(1+0.0053020*(sin(phi(k)))^2-0.0000070*(sin(2*phi(k)))^2 - 2*hs(k)/a) - 0.00014;
- g = 9.78030*(1+0.0053020*(sin(phi(k)))^2-0.0000070*(sin(2*phi(k)))^2) - 0.00014 - 0.000003086*hs(k);
- %g = 9.78030*(1 - 2*hs(k)/a + (3/4)*e*(sin(phi(k)))^2);
-%  g = 9.8155;
-
-% ?????????? Ux
-uE = 0;  
-uN = u*cos(phi(k));
-uH = u*sin(phi(k));
-
- % ??????? (3.6). Omega - ?????? ??????? ???????? ????????Ÿ??????
- % ???????????? ???????????? ?????
-omegaE = -Vns(k)/(Rn+hs(k));  % Omeg1
-omegaN = Ves(k)/(Re+hs(k));   % Omeg2
-omegaH = omegaN*tan(phi(k));  %Omeg3
-
-% ?????Ÿ????? ??????? ????? (Ÿ???? ???Ÿ????? Ax)
-Omega = [0 , omegaH + uH, - omegaN-uN;...
-     -omegaH-uH,  0 , omegaE+uE;...
-     omegaN+uN, - omegaE-uE , 0];
-
- % ???????Ÿ?? ????, Ÿ?? ????
- omega = sqrt((omegaE+uE)^2 + (omegaN+uN)^2 + (omegaH + uH)^2);
- 
-c1 = sin(omega*delta)/omega;
-c2 = (1-cos(omega*delta))/(omega^2) ;
-F = eye(3) + c1*Omega + c2* Omega^2;
-Ax = F*Ax; % A_i+1
-
-%4
-L = Az*Ax'; 
-
-% detL = det(L)% ?????????? ?????????? ???????????? ???????????? ????????Ÿ?????? ???????????? (????? ??????? 3.7)
-fz = [z1(k); z2(k); z3(k)];
- % f (?????????/????) ? ??????? ????????? (z1, z2, z3)
-% ??????? ? ??????? Ox (???)
-fy = L'*fz;  % ??????? ? ???????Ÿ????? ??????????; fy - ????/????????? ???????????? ?????
-
-% ????? ?????? ? ?????? ???????
-
-%5
-% (3.14 (2))
-dotVe = (omegaH + 2*uH)*Vns(k) - (omegaN + 2*uN)*Vhs(k) + fy(1,1);
-dotVn = -(omegaH + 2*uH)*Ves(k) + (omegaE + 2*uE)*Vhs(k) + fy(2,1);
-dotVh= (omegaN + 2*uN)*Ves(k) - (omegaE + 2*uE)*Vns(k) + fy(3,1) - g;
-
-% fy
-            
-for i7 = 1 : size(Ve)
-         if t(k) == t2(i7)
-            teta2 = pitch(i7);
-            gamma2 = roll(i7);
-            psi2 = head(i7);
-            L1( :,3) = [-cos(teta2) * sin(gamma2); sin(teta2); cos(teta2)*cos(gamma2)];
-            L1(:, 2) = [sin(psi2)*cos(gamma2) + cos(psi2)*sin(teta2)*sin(gamma2); cos(psi2)*cos(teta2); sin(psi2)*sin(gamma2) - cos(psi2)*sin(teta2)*cos(gamma2)];
-            L1(:, 1) = [cos(psi2)*cos(gamma2) - sin(psi2)*sin(teta2)*sin(gamma2); -sin(psi2)*cos(teta2); cos(psi2)*sin(gamma2) + sin(psi2)*sin(teta2)*cos(gamma2)]; 
-            L1 = L1';
-            fy1 = L1'*fz;
-            dotVe1 = (omegaH + 2*uH)*Vn(i7) - (omegaN + 2*uN)*Vh(i7) + fy1(1,1);
-            dotVn1 = -(omegaH + 2*uH)*Ve(i7) + (omegaE + 2*uE)*Vh(i7) + fy1(2,1);
-            dotVh1 = (omegaN + 2*uN)*Ve(i7) - (omegaE + 2*uE)*Vn(i7) + fy1(3,1) - g;
-            norm(fy - fy1)
-            t2(i7)
-            deltaDotV1(i7) = (dotVe - dotVe1);
-            deltaDotV2(i7) = (dotVn - dotVn1);
-            deltaDotV3(i7) = (dotVh - dotVh1);
+% calculating orientation matrix L
+L = zeros(3, 3);
+% properTeta  = 0;
+% properGamma = 0;
+% properPsi = -1.483529864195180;
+% L(:, 3) = fz / g;
+L(:, 3) = [0 0 1];
+sinTeta = L(2, 3);
+properTeta = asin(sinTeta);
+cosGamma = L(3, 3) / cos(properTeta);
+properGamma = -abs(acos(cosGamma));
+%re-calculating 3rd column of L by true values of angles
+L( :, 3) = [
+            -cos(properTeta) * sin(properGamma); 
+            sin(properTeta); 
+            cos(properTeta) * cos(properTeta)
+            ];
         
+L(:, 2) = [
+            (uz(1)-L(1,3)*norm(uz)*sin(phi0))/(cos(phi0)*norm(uz));
+            (uz(2)-L(2,3)*norm(uz)*sin(phi0))/(cos(phi0)*norm(uz));
+            (uz(3)-L(3,3)*norm(uz)*sin(phi0))/(cos(phi0)*norm(uz))
+            ];
+
+cosPsi = L(2, 2) / cos(properTeta);
+properPsi = -acos(cosPsi);
+
+L(:, 2) = [
+           sin(properPsi)*cos(properTeta) + cos(properPsi)*sin(properTeta)*sin(properGamma); 
+           cos(properPsi)*cos(properTeta); 
+           sin(properPsi)*sin(properGamma) - cos(properPsi)*sin(properTeta)*cos(properGamma)
+           ];
+
+L(:, 1) = [
+           cos(properPsi)*cos(properGamma) - sin(properPsi)*sin(properTeta)*sin(properGamma); 
+           -sin(properPsi)*cos(properTeta); 
+           cos(properPsi)*sin(properGamma) + sin(properPsi)*sin(properTeta)*cos(properGamma)
+           ]; 
+
+% start 2nd stage of solution
+% initializing matrices 
+Az = L; 
+Ax = eye(3);
+
+% 
+h_s = zeros(size(z1));
+Ve_s = zeros(size(z1));
+Vn_s = zeros(size(z1));
+Vh_s = zeros(size(z1));
+psi = zeros(size(z1));
+gam = zeros(size(z1));
+tet = zeros(size(z1));
+for i = 1 : motionStartIndex
+   lambda(i) = lambda0;
+   phi(i) = phi0;
+   h_s(i) = h0;
+   Ve_s(i) = Ve0;
+   Vn_s(i) = Vn0;
+   Vh_s(i) = Vh0;
+   psi(i) = properPsi;
+   gam(i) = properGamma;
+   tet(i) = properTeta;
+end
+
+if includeRealConfiguration == true
+    deltaTDotV1 = zeros(size(Ve) - 3);
+    deltaTDotV2 = zeros(size(Ve) - 3);
+    deltaTDotV3 = zeros(size(Ve) - 3);
+end
+
+%dec size(t) to avoid exceptions in getting k+1 element
+for k = motionStartIndex : (size(t)-1)
+    % deltaT time
+    deltaT = t(k+1) - t(k);
+
+    omega = sqrt(omega1(k)^2 + omega2(k)^2 + omega3(k)^2);
+    % coeffiecients from (3.12) for Az calculating
+    c1 = sin(omega*deltaT) / omega;
+    c2 = (1-cos(omega*deltaT)) / (omega^2) ;
+
+    % (3.4) 
+    Omega = [0 ,            omega3(k),      - omega2(k);...  
+            -omega3(k),     0 ,               omega1(k);...
+             omega2(k),      - omega1(k) ,           0];
+    
+    % A_i+1  recurrent method(3.12)
+    % using previous Az calculated 1 iteration before
+    Az = (eye(3) + c1*Omega+ c2* Omega^2) * Az;  
+
+    % (3.7)
+    % Curve radiuses (east and nord)
+    Re = a / sqrt(1 - e*(sin(phi(k)))^2);
+    Rn = a * (1 - e) / (1 - e * (sin(phi(k)))^2)^(3/2);
+    
+    % calculating current free fall acceleration
+    g = 9.78030*(1 + 0.0053020 * (sin(phi(k)))^2 - 0.0000070*(sin(2*phi(k)))^2) - 0.00014 - 0.000003086*h_s(k);
+    
+    % angular velocity with respect to geographical axles
+    uE = 0;  
+    uN = u * cos(phi(k));
+    uH = u * sin(phi(k));
+
+    % (3.6)
+    % components of geographical repper angular velocity with respect to Earth
+    omegaE = -Vn_s(k) / (Rn + h_s(k));  
+    omegaN = Ve_s(k) / (Re + h_s(k));   
+    omegaH = omegaN * tan(phi(k));  
+
+    % Filling matrix 
+    Omega = [0 ,            omegaH+uH,      - omegaN-uN;...
+            -omegaH-uH,     0 ,               omegaE+uE;...
+             omegaN+uN,     -omegaE-uE ,             0];
+
+    % calculating omega + ux (defined above)
+    omega = norm([omegaE+uE, omegaN+uN, omegaH + uH]);
+ 
+    c1 = sin(omega*deltaT) / omega;
+    c2 = (1 - cos(omega*deltaT)) / (omega^2);
+    F = eye(3) + c1*Omega + c2* Omega^2;
+    Ax = F * Ax; % A_i+1
+
+    % Re-calculating L in new iteration
+    % Has to be always ortogonal
+    L = Az * Ax'; 
+
+    % (3.7)
+    fz = [z1(k); z2(k); z3(k)];
+    fy = L' * fz;  
+
+    % (3.14 (2)) equations
+    dotVe =  (omegaH + 2*uH)*Vn_s(k) - (omegaN + 2*uN)*Vh_s(k) + fy(1,1);
+    dotVn = -(omegaH + 2*uH)*Ve_s(k) + (omegaE + 2*uE)*Vh_s(k) + fy(2,1);
+    dotVh =  (omegaN + 2*uN)*Ve_s(k) - (omegaE + 2*uE)*Vn_s(k) + fy(3,1) - g;
+
+    for indexVe = 1 : size(Ve)
+        % Optional calculations for plots
+        % k - index of outer loop
+         if includeRealConfiguration == true
+            if t(k) == t2(indexVe)
+                teta2 = pitch(indexVe);
+                gamma2 = roll(indexVe);
+                psi2 = head(indexVe);
+                L1( :,3) = [-cos(teta2) * sin(gamma2); sin(teta2); cos(teta2)*cos(gamma2)];
+                L1(:, 2) = [sin(psi2)*cos(gamma2) + cos(psi2)*sin(teta2)*sin(gamma2); cos(psi2)*cos(teta2); sin(psi2)*sin(gamma2) - cos(psi2)*sin(teta2)*cos(gamma2)];
+                L1(:, 1) = [cos(psi2)*cos(gamma2) - sin(psi2)*sin(teta2)*sin(gamma2); -sin(psi2)*cos(teta2); cos(psi2)*sin(gamma2) + sin(psi2)*sin(teta2)*cos(gamma2)]; 
+             
+                fy1 = L1 * fz;
+                
+                dotVe1 = (omegaH + 2*uH)*Vn(indexVe) - (omegaN + 2*uN)*Vh(indexVe) + fy1(1,1);
+                dotVn1 = -(omegaH + 2*uH)*Ve(indexVe) + (omegaE + 2*uE)*Vh(indexVe) + fy1(2,1);
+                dotVh1 = (omegaN + 2*uN)*Ve(indexVe) - (omegaE + 2*uE)*Vn(indexVe) + fy1(3,1) - g;
+
+                deltaTDotV1(indexVe) = (dotVe - dotVe1);
+                deltaTDotV2(indexVe) = (dotVn - dotVn1);
+                deltaTDotV3(indexVe) = (dotVh - dotVh1);
+            end
          end
-end
+    end
 
-
-%6
-% ????????? ??? ????????. ????? ??????
-Ves(k+1)=  Ves(k) + delta*dotVe;  % V1
-Vns(k+1)=  Vns(k) + delta*dotVn;  % V2
-Vhs(k+1)=  Vhs(k) + delta*dotVh;
-
-%7
-% ??????? (3.15). ????? ??????. ?????????? ???????? ? ????????Ÿ?????
-% % ???????
-lambda(k+1) = lambda(k)+delta*Ves(k)/((Re+hs(k))*cos(phi(k)));
-phi(k+1)= phi(k)+delta*Vns(k)/(Rn+hs(k));
-hs(k+1) = hs(k) + delta*Vhs(k);
+    % filling last delta's of velocities
+    Ve_s(k+1)=  Ve_s(k) + deltaT*dotVe;  
+    Vn_s(k+1)=  Vn_s(k) + deltaT*dotVn;  
+    Vh_s(k+1)=  Vh_s(k) + deltaT*dotVh;
+    
+    % calculating new values of geographical coordinates
+    lambda(k+1) = lambda(k) + deltaT*Ve_s(k)/((Re+h_s(k))*cos(phi(k)));
+    phi(k+1)= phi(k) + deltaT*Vn_s(k)/(Rn+h_s(k));
+    h_s(k+1) = h_s(k) + deltaT*Vh_s(k);
 
 end
 
-dotVe1 = (omegaH + 2*uH)*Vn(end) - (omegaN + 2*uN)*Vh(end) + fy(1,1);
-dotVn1 = -(omegaH + 2*uH)*Ve(end) + (omegaE + 2*uE)*Vh(end) + fy(2,1);
-dotVh1 = (omegaN + 2*uN)*Ve(end) - (omegaE + 2*uE)*Vn(end) + fy(3,1) - g;
-deltaDotV1(end) = (dotVe - dotVe1);
-deltaDotV2(end) = (dotVn - dotVn1);
-deltaDotV3(end) = (dotVh - dotVh1);
-
-sizeFrac = size(phi) / size(long);
-
+% transform to Cartesian coordinates and move to (0,0)
+% h - already good
 x_0 = (R + h(1)) * long(1);
 y_0 = (R + h(1)) * log(tan(pi/4 + 0.5*lat(1)));
+x = zeros(size(long));
+y = zeros(size(long));
 for i1 = 1 : size(long) 
     x(i1) = (R + h(i1)) * long(i1) - x_0;
     y(i1) = (R + h(i1)) * log(tan(pi/4 + 0.5*lat(i1))) - y_0;
 end
 
-x_1_0 = (R + hs(1)) * lambda(1);
-y_1_0 = (R + hs(1)) * log(tan(pi/4 + 0.5*phi(1)));
-
-x1 = zeros(901,1);
-y1 = zeros(901,1);
-h1 = zeros(901,1);
-for i2 = 1 : size(lambda')
-    
-%     if mod(i2,99) == 0
-%         i3 = i2 / 99;
-        i3 = i2;
-        x1(i3) = (R + hs(i2)) * lambda(i2) - x_1_0;
-        y1(i3) = (R + hs(i2)) * log(tan(pi/4 + 0.5*phi(i2))) - y_1_0;
-        h1(i3) = hs(i2);
-%     end
-    
+% transform to Cartesian coordinates and mobe to (0,0)
+x_1_0 = (R + h_s(1)) * lambda(1);
+y_1_0 = (R + h_s(1)) * log(tan(pi/4 + 0.5*phi(1)));
+x1 = zeros(size(lambda'));
+y1 = zeros(size(lambda'));
+h1 = zeros(size(lambda'));
+for i1 = 1 : size(lambda')
+        x1(i1) = (R + h_s(i1)) * lambda(i1) - x_1_0;
+        y1(i1) = (R + h_s(i1)) * log(tan(pi/4 + 0.5*phi(i1))) - y_1_0;
+        h1(i1) = h_s(i1);
 end    
 
-for i2 = 1 : size(lambda)
-    long(i2) = (R + h(i2)) * sin(phi(i2)) * cos(lambda(i2));
-    lat(i2) = (R + h(i2)) * sin(phi(i2)) * sin(lambda(i2));
-end
 
-
-
-% ??????
-figure(1);clf;
+% Printig trajectories - true and calculated
+figure('Name', 'Trajectories');
+clf;
 plot3(x,y,h,'k','LineWidth' ,3);
 hold on;
 plot3(x1,y1,h1,'g','LineWidth' ,3);
+grid on;
 
-
-r1 = [(R + hs(k)) * sin(phi(k)) * cos(lambda(k)),
-        (R + hs(k)) * sin(phi(k)) * sin(lambda(k)),
-        (R + hs(k)) * cos(phi(k))];
+% Calculating error beetween positions in the end of motion
+r1 = [  (R + h_s(k)) * sin(phi(k)) * cos(lambda(k))
+        (R + h_s(k)) * sin(phi(k)) * sin(lambda(k))
+        (R + h_s(k)) * cos(phi(k))];
     
-r2 = [(R + h(901)) * sin(lat(901)) * cos(long(901)),
-        (R + h(901)) * sin(lat(901)) * sin(long(901)),
+r2 = [  (R + h(901)) * sin(lat(901)) * cos(long(901))
+        (R + h(901)) * sin(lat(901)) * sin(long(901))
         (R + h(901)) * cos(lat(901))];
-
-r = norm(r1 - r2)
-
-
-deltaV1 = zeros(901, 1);
-deltaV2 = zeros(901, 1);
-deltaV3 = zeros(901, 1);
-
-for i4 = 1 : size(Ve)
     
-%     index = 1;
+% Distance beetween endpoints
+r = norm(r1 - r2);
+disp(r);
+
+if includeRealConfiguration == true
+    deltaTV1 = zeros(901, 1);
+    deltaTV2 = zeros(901, 1);
+    deltaTV3 = zeros(901, 1);
     
-    for i7 = 1 : size(Ves')
-         if t(i7) == t2(i4)
-             index = i7;
-             deltaV1(i4) = (Ve(i4) - Ves(index));
-    deltaV2(i4) = (Vh(i4) - Vhs(index));
-    deltaV3(i4) = (Vn(i4) - Vns(index));
-         end
+    % calculating velocity differences in last time (optional)
+    dotVe1 =  (omegaH + 2*uH)*Vn(end) - (omegaN + 2*uN)*Vh(end) + fy(1,1);
+    dotVn1 = -(omegaH + 2*uH)*Ve(end) + (omegaE + 2*uE)*Vh(end) + fy(2,1);
+    dotVh1 =  (omegaN + 2*uN)*Ve(end) - (omegaE + 2*uE)*Vn(end) + fy(3,1) - g;
+    deltaTDotV1(end) = (dotVe - dotVe1);
+    deltaTDotV2(end) = (dotVn - dotVn1);
+    deltaTDotV3(end) = (dotVh - dotVh1);
+
+    % Differnces beetween velocities
+    for i = 1 : size(Ve)
+        for indexVe = 1 : size(Ve_s)
+             if t(indexVe) == t2(i)
+                 deltaTV1(i) = (Ve(i) - Ve_s(indexVe));
+                 deltaTV2(i) = (Vh(i) - Vh_s(indexVe));
+                 deltaTV3(i) = (Vn(i) - Vn_s(indexVe));
+             end
+        end
     end
-    
-    
+
+    deltaTV1(end) = (Ve(end) - Ve_s(end));
+    deltaTV2(end) = (Vh(end) - Vh_s(end));
+    deltaTV3(end) = (Vn(end) - Vn_s(end));
+
+    % Printing plots of dotV differnces
+    figure('Name', 'Delta dotV east');clf;
+    plot(t2(3 : 901), deltaTDotV1);
+    hold on;
+    grid on;
+
+    figure('Name', 'Delta dotV height');clf;
+    plot(t2(3 : 901), deltaTDotV2);
+    hold on;
+    grid on;
+
+    figure('Name', 'Delta dotV north');clf;
+    plot(t2(3 : 901), deltaTDotV3);
+    hold on;
+    grid on;
+
+    % Printing plots of V differences
+    figure('Name', 'Delta V east');clf;
+    plot(t2, deltaTV1);
+    hold on;
+    grid on;
+
+    figure('Name', 'Delta V height');clf;
+    plot(t2, deltaTV2);
+    hold on;
+    grid on;
+
+    figure('Name', 'Delta V north');clf;
+    plot(t2, deltaTV3);
+    hold on;
+    grid on;
+
+    % Printing velocities 
+    figure('Name', 'East Velocity (true and calculated)');clf;
+    plot(t2, Ve)
+    hold on
+    plot(t,Ve_s)
+    hold on
+
+    figure('Name', 'Height Velocity (true and calculated)');clf;
+    plot(t2, Vh)
+    hold on
+    plot(t, Vh_s)
+    hold on
+
+    figure('Name', 'North Velocity (true and calculated)');clf;
+    plot(t2, Vn)
+    hold on
+    plot(t, Vn_s)
+    hold on
+    grid on;
+
 end
-
-
-deltaV1(end) = (Ve(end) - Ves(end));
-deltaV2(end) = (Vh(end) - Vhs(end));
-deltaV3(end) = (Vn(end) - Vns(end));
-
-figure(8);clf;
-plot(t2(3:901),deltaDotV3);
-hold on;
-grid on;
-
-figure(9);clf;
-plot(t2(3:901),deltaDotV2);
-hold on;
-grid on;
-
-figure(10);clf;
-plot(t2(3:901),deltaDotV1);
-hold on;
-grid on;
-
-figure(7);clf;
-plot(t2,deltaV1);
-hold on;
-grid on;
-
-figure(6);clf;
-plot(t2,deltaV2);
-hold on;
-grid on;
-
-figure(5);clf;
-plot(t2,deltaV3);
-hold on;
-grid on;
-
-figure(2);clf;
-plot(t2,Ve)
-hold on
-plot(t,Ves)
-hold on
-
-figure(3);clf;
-plot(t2,Vh)
-hold on
-plot(t,Vhs)
-hold on
-
-figure(4);clf;
-plot(t2,Vn)
-hold on
-plot(t,Vns)
-hold on
-
-
-grid on;
   
    
